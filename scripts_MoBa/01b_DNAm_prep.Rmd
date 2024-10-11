@@ -1,0 +1,379 @@
+---
+title: "Load DNAm data and merge with other data"
+author: "Leonard Frach"
+date: "17/06/2024"
+output: html_document
+---
+
+
+```{r}
+require(tidyverse)
+require(foreign)
+
+#list of all file names in the PRS folder
+wdir = "N:/durable/data/genetic/MoBa_methylation/" 
+vars <- list.files(wdir)
+
+
+## read linkage files
+link <- foreign::read.spss("N:/durable/data/Linkage_files/Genetics_link/Methylation/PDB2306_Methylation_linkage_met005-met010_050523.sav", to.data.frame = TRUE)
+
+
+link2 <- foreign::read.spss("N:/durable/data/Linkage_files/Genetics_link/Methylation/2023_11_01_PDB2306_Methylation.sav", to.data.frame = TRUE)
+
+
+head(link)
+head(link2)
+
+nTot <- nrow(link) + nrow(link2)
+
+link <- rbind(link2, link)
+
+# duplicated preg IDs? Could indicate parents and children! (not real duplicates)
+table(duplicated(link$PREG_ID_2306))
+
+
+## read sample sheets
+for(i in c(1:2, 4:10)){
+  temp <- read.csv(paste0(wdir, word(vars[i]), "/raw-data/sampleSheet_", word(vars[i]), ".csv"))
+  assign(paste0("Samp_DNAm_", i), temp) 
+}
+
+# # rest of sample sheets
+# for(i in c(1:2, 4, 6:10)){
+#   temp <- read.csv(paste0(wdir, word(vars[i]), "/raw-data/sampleSheet_", word(vars[i]), "_child.csv"))
+#   assign(paste0("Samp_DNAm_", i), temp) 
+# }
+
+
+# child cohorts
+
+(nrow(Samp_DNAm_1) + nrow(Samp_DNAm_2) + nrow(Samp_DNAm_4) + nrow(Samp_DNAm_6) + nrow(Samp_DNAm_7) + nrow(Samp_DNAm_8) + nrow(Samp_DNAm_9) + nrow(Samp_DNAm_10))
+# 8139 minus 1000 IVF children (sample 4) = 7139
+# potentially exclude samples 9 and 10 (2.2k)
+# overlap with genetic and pheno data might be limited
+
+gc()
+
+
+head(link)
+names(link)[3] <- "Sample_Name"
+link$Sample_Name <- gsub(" ", "", link$Sample_Name)
+
+head(Samp_DNAm_6)
+
+# only use children
+link_child <- link[link$ROLE == "Child               ", c("PREG_ID_2306", "BARN_NR", "MOMICS_ID")]
+link_mother <- link[link$ROLE == "Mother              ", c("PREG_ID_2306", "BARN_NR", "MOMICS_ID")]
+link_father <- link[link$ROLE == "Father              ", c("PREG_ID_2306", "BARN_NR", "MOMICS_ID")]
+
+# 8015 children
+
+# duplicated preg IDs for children?
+dups <- link_child[duplicated(link_child$PREG_ID_2306), ] #579 duplicates?
+dups_mother <- link_mother[duplicated(link_mother$PREG_ID_2306), ] #322 duplicates?
+dups_father <- link_father[duplicated(link_father$PREG_ID_2306), ] #38 duplicates?
+
+
+check_dups <- link_child[link_child$PREG_ID_2306 %in% dups$PREG_ID_2306, ]
+# all have BARN_NR = 1, so presumably most of them are true duplicates
+
+check_mother <- link_mother[link_mother$PREG_ID_2306 %in% dups_mother$PREG_ID_2306, ]
+
+check_father <- link_father[link_father$PREG_ID_2306 %in% dups_father$PREG_ID_2306, ]
+
+# align column names
+Samp_DNAm_1 <- Samp_DNAm_1 %>% 
+  filter(Samp_DNAm_1$Comment != "Failed Sample" & Samp_DNAm_1$Comment != "Failed Sample; Low con" &
+           Samp_DNAm_1$Comment != "Illumina ctrl")
+Samp_DNAm_1 <- Samp_DNAm_1 %>% select(-c("Comment", "Org_Id"))
+
+Samp_DNAm_2 <- Samp_DNAm_2 %>% filter(Samp_DNAm_2$Comment != "Failed Sample")
+Samp_DNAm_2 <- Samp_DNAm_2 %>% select(-c("Comment", "repeat.", "Best_run", "DNA_Barcode", "Concentration", "plate"))
+
+Samp_DNAm_4 <- Samp_DNAm_4 %>% select(-c("labSampleId", "Project"))
+Samp_DNAm_8 <- Samp_DNAm_8 %>% select(-c("Project"))
+
+Samp_DNAm_1$SampleType <- "B"
+Samp_DNAm_2$SampleType <- "B"
+
+Samp_DNAm_9$Sample_Group <- "EPICv1"
+Samp_DNAm_10$Sample_Group <- "EPICv1"
+
+
+# reorder columns
+Samp_DNAm_1 <- Samp_DNAm_1[, c("Sample_Name", "Sample_Well", "Sample_Plate"  ,"Sample_Group", "Sentrix_ID", "Sentrix_Position", "SampleType", "Sex")]
+
+Samp_DNAm_2 <- Samp_DNAm_2[, c("Sample_Name", "Sample_Well", "Sample_Plate"  ,"Sample_Group", "Sentrix_ID", "Sentrix_Position", "SampleType", "Sex")]
+
+Samp_DNAm_9 <- Samp_DNAm_9[, c("Sample_Name", "Sample_Well", "Sample_Plate"  ,"Sample_Group", "Sentrix_ID", "Sentrix_Position", "SampleType", "Sex")]
+
+Samp_DNAm_10 <- Samp_DNAm_10[, c("Sample_Name", "Sample_Well", "Sample_Plate"  ,"Sample_Group", "Sentrix_ID", "Sentrix_Position", "SampleType", "Sex")]
+
+
+# transform variables to match other files
+# link$PREG_ID_2306 <- as.character(link$PREG_ID_2306)
+# link$BARN_NR <- as.character(link$BARN_NR)
+#link3 <- sub(" ", "", merged_DNAm)
+
+# merge DNAm sample sheets
+samp_sheets_all <- rbind(Samp_DNAm_1, Samp_DNAm_2, Samp_DNAm_4, Samp_DNAm_6, Samp_DNAm_7, Samp_DNAm_8, Samp_DNAm_9, Samp_DNAm_10)
+
+# merge with pregnancy IDs
+samp_sheets_all$Sample_Name <- toupper(samp_sheets_all$Sample_Name)
+samp_sheets_all$Sentrix_Position <- toupper(samp_sheets_all$Sentrix_Position)
+
+
+link$ROLE <- gsub(" ", "", link$ROLE)
+link$DATASET <- gsub(" ", "", link$DATASET)
+link$MOMICS_ID <- gsub(" ", "", link$MOMICS_ID)
+link$PROJECTNUMBER <- gsub(" ", "", link$PROJECTNUMBER)
+link$SAMPLETYPE  <- gsub(" ", "", link$SAMPLETYPE )
+link$SPECIMENTYPE <- gsub(" ", "", link$SPECIMENTYPE)
+
+link$Sample_Name <- link$MOMICS_ID
+link$MOMICS_ID <- NULL
+
+names(link)[8] <- "SampleType"
+
+samp_sheets_all$Sample_Plate <- gsub(" ", "", samp_sheets_all$Sample_Plate)
+
+
+# join linkage 
+df <- right_join(link, samp_sheets_all)
+
+table(duplicated(df$PREG_ID_2306)) # contains duplicates, siblings and parent-offpsring pairs
+
+gc()
+
+
+library(phenotools)
+# Read data from MBRN
+ivf <- available_variables(source = "moba") %>% 
+  variable_search(c("ivf"), where = "anywhere") %>% 
+  .$var_name
+# not available
+
+# mbrn <- foreign::read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_V12/SPSS/PDB2306_MBRN_541_v12.sav",
+#  to.data.frame = TRUE) %>% 
+#  select(PREG_ID_2306, BARN_NR, KJONN, FAAR, IVF)
+
+
+# Read NPR data
+child_adhd <- available_variables(source = "npr") %>% 
+  variable_search(c("F90"), where = "anywhere") %>% 
+  .$var_name
+
+f90_all <- curate_npr(diagnoses = child_adhd,
+                        out_format = "merged_df", dx_owners = c("child", "father", "mother"))
+
+table(f90_all$received_dx_F90_npr_child) # 5996 children with diagnosis
+table(f90_all$received_dx_F90_npr_mother) # 1804  mothers with diagnosis
+table(f90_all$received_dx_F90_npr_father) # 1146  fathers with diagnosis
+
+
+# merge with epigenetic data
+names(f90_all)[1] <- "PREG_ID_2306"
+f90_all$PREG_ID_2306 <- as.numeric(f90_all$PREG_ID_2306)
+
+df$BARN_NR <- NULL #not the correct number..
+
+merged_DNAm <- right_join(df, f90_all)
+
+merged_DNAm$Sample_Group <- ifelse(merged_DNAm$DATASET == "met001" |
+                                     merged_DNAm$DATASET == "met002" |
+                                     merged_DNAm$DATASET == "met006", "450k", "EPICv1")
+
+unique_id_child <- merged_DNAm %>% filter(ROLE == "Child")
+unique_id_mother <- merged_DNAm %>% filter(ROLE == "Mother")
+unique_id_father <- merged_DNAm %>% filter(ROLE == "Father")
+
+
+# keep only unique preg_ID (or siblings)
+dups_new <- unique_id_child[duplicated(unique_id_child$PREG_ID_2306), ] #570 duplicates?
+
+dat <- unique_id_child[unique_id_child$PREG_ID_2306 %in% dups_new$PREG_ID_2306, ]
+table(dat$BARN_NR) # all 1, so remove? could be siblings
+
+
+# remove duplicates
+# unique_id_child <- unique_id_child[!duplicated(unique_id_child$PREG_ID_2306), ]
+# unique_id_father <- unique_id_father[!duplicated(unique_id_father$PREG_ID_2306), ]
+# unique_id_mother <- unique_id_mother[!duplicated(unique_id_mother$PREG_ID_2306), ]
+
+
+#merged_no_dups <- rbind(unique_id_child, unique_id_mother, unique_id_father)
+
+# Number of cases and controls
+# children
+DNAm_npr <- merged_DNAm %>% filter(!is.na(DATASET))
+
+# n cases for children with DNAm data
+table(DNAm_npr$received_dx_F90_npr_child) # 1682   yes, 13024   no
+table(DNAm_npr$received_dx_F90_npr_father) # 223  yes, 13674  no
+table(DNAm_npr$received_dx_F90_npr_mother) # 229 yes, 14477 no
+
+# received diagnosis more than once
+table(DNAm_npr$received_dx_2x_F90_npr_child) # 1618 yes, 13088   no
+
+
+# by batch
+library(tidyverse)
+table <- list()
+
+for (i in 1:length(table(DNAm_npr$DATASET))) {
+  table[[i]] <- table(DNAm_npr$received_dx_F90_npr_child[DNAm_npr$DATASET == names(table(DNAm_npr$DATASET)[i])])
+}
+
+
+for (i in 1:length(table(DNAm_npr$DATASET))) {
+  print(table[[i]])
+}
+
+table(unique_id_child$Sample_Group) # 450k = 2082, EPICv1 = 5317
+table(unique_id_father$Sample_Group) # EPICv1 = 3323 
+table(unique_id_mother$Sample_Group) # EPICv1 = 4059 
+
+# total 450k = , EPICv1 =   
+
+
+# remove parents with DNAm data
+merged_DNAm2 <- merged_DNAm %>% filter(ROLE == "Child" | is.na(ROLE))
+
+save(merged_DNAm2, file = "merged_NPR_ADHD_DNAm.RData")
+
+#################################################################
+#################################################################
+
+# load genetic data of complete trios
+load("N:/durable/people/Leo/DNAm_ADHD/data/prs_comp_trios.RData")
+
+# recode IDs
+prs_comp_trios$PREG_ID_2306 <- as.numeric(prs_comp_trios$PREG_ID_2306)
+prs_comp_trios$BARN_NR <- as.numeric(prs_comp_trios$BARN_NR)
+
+
+# load pheno data for sex and age
+load("N:/durable/people/Leo/DNAm_ADHD/data/pheno_ADHD.RData")
+data_all <- data_all %>% dplyr::select(-c("ADHDdiag_child", "ADHDdiag_father", "ADHDdiag_mother"))
+
+# merge pheno, genetic and DNAm data
+data_all <- data_all %>% dplyr::full_join(merged_DNAm2)
+save(data_all, file = "data_DNAm_pgs_pheno.RData")
+
+# subset of DNAm samples with epigenetic data + parents genotyped
+df2 <- df[df$PREG_ID_2306 %in% prs_comp_trios$PREG_ID_2306, ] # down to N = 10k from 14k 
+table(df2$ROLE)
+
+# merge with genetic data
+omics <- prs_comp_trios %>% left_join(df2)
+
+# merge omics and child pheno data
+omics_pheno <- omics %>% left_join(phenoData)
+
+# trios with genetic data and child methylation data
+omics_compl <- omics_pheno[!is.na(omics_pheno$Sample_Name), ] # 2630 trios
+
+
+# check duplicates
+dup_ids <- omics_compl[duplicated(omics_compl$PREG_ID_2306), "PREG_ID_2306"]
+dups <- omics_compl[omics_compl$PREG_ID_2306 %in% dup_ids, c(1:5, 26:27)]
+dups <- arrange(dups, by = "PREG_ID_2306")
+
+table(dups$BARN_NR) # all have birth number 1
+# these are actual duplicates (and not twins), so remove one individual of each "pair"
+
+
+#omics_compl <- omics_compl %>% distinct(PREG_ID_2306, .keep_all = T) # 2474 individuals remain
+#table(is.na(omics_compl$adhdSum)) # 1138 with genetic, DNAm and pheno data
+
+
+#save(omics_compl, file = "N:/durable/people/Leo/DNAm_ADHD/data/omics_complete.RData")
+
+
+## other sub data sets ##
+
+# overlap child pheno and DNAm data (without genetic data)
+# DNAm_pheno <- phenoData %>% right_join(df)
+
+table(duplicated(DNAm_pheno$PREG_ID_2306)) # contains duplicated individuals
+DNAm_pheno <- DNAm_pheno %>% distinct(PREG_ID_2306, .keep_all = T) # 3860 individuals remain
+
+table(is.na(DNAm_pheno$adhdSum)) # 1726 children with both DNAm and pheno data
+
+# save data set
+# save(DNAm_pheno, file = "N:/durable/people/Leo/DNAm_ADHD/data/DNAm_pheno.RData")
+
+
+##############################################################
+##############################################################
+
+rm(check_dups, check_father, check_mother, dat, df, dups, dups_father, dups_mother, dups_new,
+   f42_all, keep, mbrn, merged_DNAm, link2, link_child, link_mother, link_father, samp_sheets_all)
+
+## read methylation data ##
+
+# data sets 1 and 2 contain multiple batches
+gc()
+
+for(i in c(1:2, 5)){
+  j = 0
+  while (j < 2) {
+    j = j + 1
+    temp <- readRDS(paste0(wdir, word(vars[i]), "/QC/results/", word(vars[i]), "-0", j, "_13_bmiqed_beta_values.rds"))
+    assign(paste0("DNAm_", i,"_", j), temp) 
+    rm(temp)
+  }
+}
+
+gc()
+
+# data sets 6 and 7 contain one batch (no index j needed)
+for(i in c(6,7)){
+  temp <- readRDS(paste0(wdir, word(vars[i]), "/QC/results/", word(vars[i]), "_13_bmiqed_beta_values.rds"))
+  assign(paste0("DNAm_", i), temp) 
+  rm(temp)
+}
+
+gc()
+
+# data sets 4, 8 and 9,10 contain parents, so there is a different data structure
+j = 0
+while (j < 5) {
+  for(i in c(4)){
+    j = j + 1
+    temp <- readRDS(paste0(wdir, word(vars[i]), "/QC/child/results/", word(vars[i]), "_child-0", j, "_13_bmiqed_beta_values.rds"))
+    assign(paste0("DNAm_", i,"_", j), temp) 
+    rm(temp)
+  }
+}
+
+gc()
+ 
+j = 0
+while (j < 4) {
+  for(i in c(8)){
+    j = j + 1
+    temp <- readRDS(paste0(wdir, word(vars[i]), "/QC/child/results/", word(vars[i]), "_child-0", j, "_13_bmiqed_beta_values.rds"))
+    assign(paste0("DNAm_", i,"_", j), temp) 
+    rm(temp)
+  }
+}
+
+gc()
+
+for(i in c(9:10)){
+  j = 0
+  while (j < 3) {
+    j = j + 1
+    temp <- readRDS(paste0(wdir, word(vars[i]), "/QC/child/results/", word(vars[i]), "_child-0", j, "_13_bmiqed_beta_values.rds"))
+    assign(paste0("DNAm_", i,"_", j), temp) 
+    rm(temp)
+  }
+}
+
+dnam1 <- merge(DNAm_1_1, DNAm_1_2)
+
+
+gc()
+```

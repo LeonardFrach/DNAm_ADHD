@@ -1,0 +1,752 @@
+---
+title: "Data preparation ADHD DNAm project"
+author: "Leonard Frach"
+date: "02 05 2023"
+output: pdf_document
+---
+
+
+# Prepare phenotype data
+
+```{r}
+DATA <- "N:/durable/people/Leo/DNAm_ADHD/data"
+OUT <- "N:/durable/people/Leo/DNAm_ADHD/output"
+```
+
+
+```{r}
+
+# This script for pulling in your data (filepaths for MoBa phenotypic data and ID linkage file below,
+# as well as example code for merging genetic and phenotypic data)
+
+require(tidyverse)
+require(foreign)
+
+# For installing R packages available on CRAN, use: 
+#install.packages("PKGNAME", repos = "file://tsd-evs/shared/R/cran")
+
+# If your required package is not available on CRAN, you need to use the miniCRAN package outside of TSD
+# to create a repository containing the package, and then import to TSD and install from that repo
+
+#########################
+# Filepaths to MoBa data
+#########################
+
+# load packages
+library(psych)
+
+# name of items for RSDBD from NN119 to NN144 (Conduct disorder)
+
+# load pheno data file (not read from spss to avoid having strings of characters)
+data <- read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_v12/SPSS/PDB2306_Q8yrs_v12.sav", to.data.frame = TRUE) %>%
+  select(PREG_ID_2306, BARN_NR, NN111:NN136)
+
+head(data)
+
+# check levels of 
+levels(data$NN111) 
+levels(data$NN119) 
+levels(data$NN121) 
+
+dat <- data
+
+# recode CD items to numerical values
+for(i in 3:10){
+  data[, i] <- recode(data[, i], Never = 0, Seldom = 1, Sometimes = 2, Often = 3, .default = NA_real_)
+}
+
+# recode ADHD items to numerical values
+for(i in 11:28){
+  data[, i] <- recode(data[, i], "Never / seldom" = 0, "Sometimes" = 1, "Often" = 2, "Very often" = 3, .default = NA_real_)
+}
+
+
+# function from Wikus to create scale sum scores based on mean score and number of items answered
+mean_scale = function(x, minR = 2){
+  ifelse(sum(!is.na(x)) >= minR, mean(x, na.rm = T), NA)
+}
+
+# apply function to create sum scores
+data$cdSum <- length(data[3:10]) * apply(data[, 3:10], 1, mean_scale, minR = 4) 
+data$adhdSum <- length(data[11:28]) * apply(data[, 11:28], 1, mean_scale, minR = 9) 
+
+# number of individuals with missing sum score
+nSumNA <- length(which(is.na(data$adhdSum))) # 130 individuals (who had data on less than half of the items of that subscale)
+
+# z standardise the sum score
+data$adhdSum_z <- scale(data$adhdSum, scale = T)
+
+describe(data$adhdSum_z)
+hist(data$adhdSum_z) 
+# bit distribution, could still work for linear models/SEM
+
+
+# Read in MoBa Birth Registry file
+## This file includes all births in MoBa (in version 12 there are 114,143 children from 112,644 pregnancies)
+## key variables: PREG_ID_2306 = main ID for linkage, unique to pregnancy, KJONN=child's sex, BARN_NR=birth order, 
+## FAAR=birth year, MORS_ALDER= mothers age
+
+mbrn <- foreign::read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_V12/SPSS/PDB2306_MBRN_541_v12.sav", to.data.frame = TRUE) %>% 
+  select(PREG_ID_2306, BARN_NR, KJONN, FAAR, MORS_ALDER)
+
+
+#########################
+# Example code for merging
+#########################
+
+phenoData <- data %>%
+  right_join(mbrn)
+
+gc()
+
+
+
+## add more child phenotype data
+library(phenotools)
+
+# get individual items to do some quality assurance and control
+# e.g., phenotools does not impute mean scores for missing items (which likely underestimates the sum score)
+# also, phenotools uses 0 to 3 instead of 1 to 4
+
+
+# child ADHD questionnaires (ages 3 and 5)
+pheno_vars <- available_variables(source = "moba")
+
+cbcl <- available_variables(source = "moba") %>% 
+  variable_search(c("cbcl"), where = "anywhere") %>% 
+  .$var_name
+# cbcl_adhd_c_3y and 	cbcl_adhd_c_5y
+cbcl <- cbcl[2:3]
+
+cprs <- available_variables(source = "moba") %>% 
+  variable_search(c("cprs"), where = "anywhere") %>% 
+  .$var_name
+# cprs_short_c_5yr
+
+rsdbd <- available_variables(source = "moba") %>% 
+  variable_search(c("rsdbd"), where = "anywhere") %>% 
+  .$var_name
+#rsdbd <- rsdbd[1]
+# rsdbd_adhd_c_8yr
+
+
+cbcl <- curate_dataset(variables_required = cbcl, out_format = "merged_df")
+cprs <- curate_dataset(variables_required = cprs, out_format = "merged_df")
+rsdbd <- curate_dataset(variables_required = rsdbd, out_format = "merged_df")
+
+gc()
+
+df <- cbcl %>% left_join(cprs) %>% left_join(rsdbd)
+
+names(df)[c(1,5)] <- c("PREG_ID_2306", "FAAR")
+df$PREG_ID_2306 <- as.numeric(df$PREG_ID_2306)
+
+phenoData <- phenoData %>% right_join(df) 
+
+table(is.na(phenoData$rsdbd_adhd_c_8yr)) # 43276 children with data
+table(is.na(phenoData$cbcl_adhd_c_5yr)) # 41197  children with data
+table(is.na(phenoData$cbcl_adhd_c_3yr)) # 58142 children with data
+table(is.na(phenoData$cprs_short_c_5yr)) # 58142 children with data
+
+describe(phenoData$rsdbd_cd_c_8yr)
+describe(phenoData$cdSum)
+
+#table(phenoData$rsdbd_hyp_c_8yr + phenoData$rsdbd_ina_c_8yr == phenoData$rsdbd_adhd_c_8yr)
+
+describe(phenoData$rsdbd_adhd_c_8yr)
+describe(phenoData$adhdSum)
+
+# ages 3 and 8 years best? check overlap with genetic data
+
+## child ADHD diagnoses
+child_adhd <- available_variables(source = "npr") %>% 
+  variable_search(c("F90"), where = "anywhere") %>% 
+  .$var_name
+
+f90_child <- curate_npr(diagnoses = child_adhd,
+                        out_format = "merged_df")
+
+table(f90_child$received_dx_F90_npr) # 6007 yes
+table(f90_child$received_dx_F90_npr, useNA = "ifany") # 6007 of 114079 (5.3%)
+
+## parental diagnoses
+
+# fathers
+f90_fathers <- curate_npr(diagnoses = child_adhd, dx_owners = "father",
+                        out_format = "merged_df")
+
+table(f90_fathers$received_dx_F90_npr) # 1147  yes, 86677 no 
+table(f90_fathers$received_dx_F90_npr, useNA = "ifany") # 1147/86677 (1.3%)
+
+# mothers
+f90_mothers <- curate_npr(diagnoses = child_adhd, dx_owners = "mother",
+                        out_format = "merged_df")
+
+table(f90_mothers$received_dx_F90_npr) # 1806  yes, 112271   no 
+table(f90_mothers$received_dx_F90_npr, useNA = "ifany") # 1806/112271  (1.6%)
+
+# only adult-onset or continuing ADHD (diagnosis required for medication)
+
+gc()
+
+
+# merge NPR data
+f90_child <- f90_child %>% select(preg_id, BARN_NR, received_dx_F90_npr) %>%
+  rename(PREG_ID_2306 = preg_id, ADHDdiag_child = received_dx_F90_npr)
+
+f90_fathers <- f90_fathers %>% select(preg_id, BARN_NR, received_dx_F90_npr) %>%
+  rename(PREG_ID_2306 = preg_id, ADHDdiag_father = received_dx_F90_npr)
+
+f90_mothers <- f90_mothers %>% select(preg_id, BARN_NR, received_dx_F90_npr) %>%
+  rename(PREG_ID_2306 = preg_id, ADHDdiag_mother = received_dx_F90_npr)
+
+
+npr <- f90_child %>% left_join(f90_fathers) %>% left_join(f90_mothers)
+npr$PREG_ID_2306 <- as.numeric(npr$PREG_ID_2306)
+ 
+
+# link to other pheno data
+data_all <- phenoData %>% left_join(npr)
+
+table(is.na(data_all$PREG_ID_2306))
+
+# parental ADHD questionnaires (age 3 child)
+mother_3y <- read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_v12/SPSS/PDB2306_Q6_3yrs_v12.sav", to.data.frame = TRUE) %>%
+  select(PREG_ID_2306, BARN_NR, GG503:GG508)
+
+
+father_q <- read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_v12/SPSS/PDB2306_QF_v12.sav", to.data.frame = TRUE) %>% 
+  select(PREG_ID_2306, FF535:FF540)
+
+
+# merge with parental pheno data
+
+data_all <- data_all %>% left_join(mother_3y) %>% 
+  left_join(father_q)
+
+
+
+#########################
+# Process, manipulate, prepare variables - and then write out to the data folder **for this project**
+#########################
+
+# check if individuals who withdrew consent are present and remove
+svInfo <- read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_v12/SPSS/PDB2306_SV_INFO_V12.sav", to.data.frame = TRUE)
+str(svInfo)
+
+# keep only individuals with preg ID are in the info file (duplicated preg IDs in data file (twins) but not in info file)
+data_all <- data_all %>% filter(data_all$PREG_ID_2306 %in% svInfo$PREG_ID_2306)
+
+save(data_all, file = "N:/durable/people/Leo/DNAm_ADHD/data/pheno_ADHD.RData")
+```
+
+
+# Prepare polygenic scores
+
+Loading PGS previously computed 
+```{r}
+# load phenotype data
+load("N:/durable/people/Leo/conduct/DNAm_ADHD/pheno_ADHD.RData")
+
+library(tidyverse)
+library(psych)
+#library(haven)
+
+#list of all file names in the PRS folder
+wdir = "N:/durable/people/Leo/DNAm_ADHD/data/PGS_LDpred2/" 
+vars <- list.files(wdir)
+
+# Read in ids, covs (PCs etc) and exclusion flag list to select unrelated trios
+
+# ##Read in exclusions list and retain only individuals not flagged for exclusion in a trio analysis
+#incl <- read.table("N:/data/durable/data/genetic/qcd_genetic_data/relatedness_exclusion_flag_list.txt", header = T) %>%
+#   filter(trio_analysis==0)
+
+# ##Read in geno-pheno ID linkage file and restrict to non-excluded individuals for trio analysis
+#ids <- read.table("N:/data/durable/data/Linkage files/core_IDS&covars_hrv_njl_v2.txt", header = T) %>%
+#   filter(IID %in% incl$IID)
+
+   
+# Read in linkage file and mutate ids (PREG_ID_2306 for child, birth order, and maternal/paternal ids to match with pheno data)
+
+# ids <- read.table("//tsd-evs/p471/data/durable/data/genetic/MoBaPsychGen_v1/MoBaPsychGen_v1-ec-eur-batch-basic-qc-cov.txt", 
+#                   header = T, 
+#                   sep = "\t") %>% 
+#   dplyr::mutate(PREG_ID_2306_BARN_NR = ifelse(Role == "Child", ID_2306, NA), 
+#                 F_ID_2306 = ifelse(Role == "Father", ID_2306, NA), 
+#                 M_ID_2306 = ifelse(Role == "Mother", ID_2306, NA)) %>% 
+#   tidyr::separate(PREG_ID_2306_BARN_NR,
+#                   into = c("PREG_ID_2306", "BARN_NR"),
+#                   sep = "_")
+
+ids <- read.table("N:/durable/data/genetic/MoBaPsychGen_v1/MoBaPsychGen_v1-ec-eur-batch-basic-qc-cov.txt", 
+                  header = T, 
+                  sep = "\t") %>% 
+  dplyr::mutate(PREG_ID_2306_BARN_NR = ifelse(Role == "Child", ID_2306, NA), 
+                F_ID_2306 = ifelse(Role == "Father", ID_2306, NA), 
+                M_ID_2306 = ifelse(Role == "Mother", ID_2306, NA)) %>% 
+  tidyr::separate(PREG_ID_2306_BARN_NR,
+                  into = c("PREG_ID_2306", "=BARN_NR"),
+                  sep = "_")
+
+
+# Create df with all pgs, merged with linkage file
+
+processed_prs <- ids
+
+
+for(i in 1:length(vars)){
+  temp <- read.table(paste0(wdir, word(vars[i]),"/", word(vars[i]), "_pred_auto.txt"), header = T)
+  names(temp)[c(1,2,3,4,7)] <- c("FID", "IID", "F_ID", "M_ID", paste0("PGS_", word(vars[i])))
+  temp[, 7] <- scale(temp[, 7]) # standardise PGS
+  temp <- temp %>% select(-c(affection))
+  processed_prs = temp %>% left_join(processed_prs)
+}
+
+
+
+
+# only select PGS 
+
+processed_prs <- processed_prs %>% dplyr::select(IID, 
+                                                 FID,
+                                                 tidyr::matches("PREG_ID"),
+                                                 "=BARN_NR", 
+                                                 tidyr::matches("F_ID"),
+                                                 tidyr::matches("M_ID"),
+                                                 Role,
+                                                 tidyr::matches("PGS_"),
+                                                 tidyr::matches("PC"),
+                                                 genotyping_batch, 
+                                                 Plate_id, 
+                                                 imputation_batch)
+
+names(processed_prs)[4] <- "BARN_NR"
+
+# save file and copy it to the cluster to proceed there with the following step (regressing out covariates)
+gc()
+
+save(processed_prs, file = "N:/durable/people/Leo/DNAm_ADHD/data/PGS_preProcessed.RData")
+
+```
+
+
+# Processing genetic data (regressing out batch effects and PCs)
+Will be performed on the cluster due to computational time
+
+```{r}
+## Prepare genetic trio data
+
+# cor(processed_prs$PGS_CUD, processed_prs$PGS_CUDlowN) # corr = 0.9986068
+# cor(processed_prs$PGS_CUD, processed_prs$PGS_CUDlowNCAS) # corr = 0.9995766
+# cor(processed_prs$PGS_CUDlowN, processed_prs$PGS_CUDlowNCAS) # corr = 0.9983328
+
+
+# cor(processed_prs$PGS_CUD, processed_prs$PGS_CUD2) # corr = 0.9993885
+# cor(processed_prs$PGS_Anxiety, processed_prs$PGS_Anxiety2) # corr = 0.9998961
+
+
+
+
+# START HERE - NOTE MERGING BY FID DOES NOT WORK - CREATES DUPLICATES (more children per fam)
+# subset pgs data based on role, then merge again to get long dataframe
+
+#load("N:/durable/people/Leo/conduct/data/PGS_preProcessed.RData")
+
+
+
+# only select relevant PRSs
+
+
+'processed_prs_pc <- processed_prs %>% dplyr::select(IID, 
+                                                 FID,
+                                                 tidyr::matches("PREG_ID"),
+                                                 BARN_NR, 
+                                                 tidyr::matches("F_ID"),
+                                                 tidyr::matches("M_ID"),
+                                                 Role,
+                                                 tidyr::matches("_p<1"),
+                                                 tidyr::matches("PC"),
+                                                 tidyr::matches(".prs.pc"),
+                                                 -contains("p<1e"),
+                                                 genotyping_batch, 
+                                                 Plate_id, 
+                                                 imputation_batch)'
+
+
+
+# regress out genotype and impuation batch effects + PCs
+# # consider regressing out sex and age (for each individual, so parental age and child age included in one variable?)
+
+model <- function(y) {
+  m <- lm(y ~ processed_prs$PC1 + processed_prs$PC2 + 
+            processed_prs$PC3 + processed_prs$PC4 + processed_prs$PC5 + 
+            processed_prs$PC6 + processed_prs$PC7 + processed_prs$PC8 + 
+            processed_prs$PC9 + processed_prs$PC10 + 
+            processed_prs$PC11 + processed_prs$PC12 + 
+            processed_prs$PC13 + processed_prs$PC14 + processed_prs$PC15 + 
+            processed_prs$PC16 + processed_prs$PC17 + processed_prs$PC18 + 
+            processed_prs$PC19 + processed_prs$PC20 +
+            processed_prs$genotyping_batch + 
+            processed_prs$Plate_id + processed_prs$imputation_batch, 
+          na.action = na.exclude)
+  return(rstandard(m))
+}
+
+
+
+# done on the cluster using process_PGS.bash and process_PGS.R scripts
+
+  
+# try with small subset
+
+# processed_prs_orig <- processed_prs
+# processed_prs <- processed_prs_orig[1:10000, ]
+# 
+# timestamp()
+# 
+# # only feasible on cluster
+#  processed_prsRes <- processed_prs %>% dplyr::mutate_at(vars(tidyr::matches("PGS_")), 
+#                        list(res = ~model(.))) %>% dplyr::select(IID, FID, 
+#                      tidyr::matches("PREG_ID"), BARN_NR, tidyr::matches("F_ID"), 
+#                      tidyr::matches("M_ID"), Role, tidyr::matches("PGS_"), 
+#                      tidyr::matches("PC"), genotyping_batch, Plate_id, imputation_batch)
+#  
+# 
+# timestamp()
+
+
+
+# read in residualized pgs
+# load("N:/durable/people/Leo/conduct/v1/data/PGS_processed.RData")
+# 
+# head(processed_prsRes)
+
+
+#########
+```
+
+
+# Merging processed PGS and pheno data
+```{r}
+
+library(tidyverse)
+library(psych)
+#library(haven)
+
+#list of all file names in the PRS folder
+wdir = "N:/durable/people/Leo/DNAm_ADHD/data/PGS_LDpred2/" 
+vars <- list.files(wdir)
+
+
+# load processed scores (previous project for now)
+
+load("N:/durable/people/Leo/DNAm_ADHD/data/PGS_processed.RData")
+
+
+table(is.na(processed_prsRes$PREG_ID_2306))
+# 130879 children
+
+prs_offspring = processed_prsRes %>% 
+  filter(Role == "Child") %>%
+  select(IID, FID, PREG_ID_2306, BARN_NR, contains("_res")) %>% 
+  rename_with(~paste0(., "_Child"), contains(vars))
+
+prs_mother = processed_prsRes %>%   
+  filter(Role == "Mother") %>%
+  select(IID, FID, M_ID_2306, contains("_res")) %>% 
+  rename_with(~paste0(., "_Mother"), contains(vars))
+
+prs_father = processed_prsRes %>%
+  filter(Role == "Father") %>%
+  select(IID, FID, F_ID_2306, contains("_res")) %>%
+  rename_with(~paste0(., "_Father"), contains(vars))
+
+
+# check for duplicates
+table(duplicated(prs_mother$M_ID_2306)) # no duplicated mothers
+
+table(duplicated(prs_mother$FID)) # FALSE 58136  TRUE 19329 (19329 mother-pairs are related and belong to the same family)
+
+
+table(duplicated(prs_father$F_ID_2306)) # no duplicated fathers
+
+table(duplicated(prs_father$FID)) # FALSE 41441  TRUE 11788  (11788  father-pairs are related)
+
+table(duplicated(prs_offspring$PREG_ID_2306)) # 700 duplicated pregnancy IDs
+
+table(duplicated(prs_offspring$FID)) # FALSE 50381  TRUE 26040 (26040 offspring-pairs are related)
+
+# no exclusion required at this stage but after merge
+
+# id file to match mother and father ids to preg id:
+link_preg <- foreign::read.spss("N:/durable/data/MoBaPhenoData/PDB2306_MoBa_v12/SPSS/PDB2306_SV_INFO_v12.sav", to.data.frame = TRUE)
+
+
+table(duplicated(link_preg$M_ID_2306)) # FALSE 94684    TRUE 17427    (17427 mothers had more than one pregnancy)
+table(duplicated(link_preg$F_ID_2306)) # FALSE 74694   TRUE 37417    (37417   father have more than one child)
+table(duplicated(link_preg$PREG_ID_2306)) # no duplicated pregancy IDs (good)
+
+link_mother <- link_preg %>% select(PREG_ID_2306, M_ID_2306)
+link_father <- link_preg %>% select(PREG_ID_2306, F_ID_2306)
+
+table(is.na(link_mother$PREG_ID_2306)) # no missing pregnancy IDs
+
+link_mother$M_ID_2306 <- as.character(str_remove(link_mother$M_ID_2306, "   "))
+link_father$F_ID_2306 <- as.character(str_remove(link_father$F_ID_2306, "   "))
+
+table(prs_mother$M_ID_2306 %in% link_mother$M_ID_2306) # 98 FALSE
+table(prs_father$F_ID_2306 %in% link_father$F_ID_2306) # 86 FALSE
+
+# merge preg id with prs based on mother and father ids
+prs_mother <- right_join(link_mother, prs_mother)
+prs_father <- right_join(link_father, prs_father)
+
+#check number of mothers with unique pregnancies, families, etc
+table(duplicated(prs_mother$PREG_ID_2306)) # no duplicated pregnancy IDs, 92826 unique
+table(is.na(prs_mother$PREG_ID_2306)) # no missing pregnancy IDs 
+
+
+table(duplicated(prs_mother$M_ID_2306)) # FALSE 77465   TRUE 15361  (15361  mothers with multiple births)
+
+table(duplicated(prs_mother$FID)) # from 58136 unique FIDs and 34690 duplicated (families with more than one mother, e.g. two mothers are sisters)
+
+
+#check number of fathers with unique pregnancies, families, etc
+table(duplicated(prs_father$PREG_ID_2306)) # no  duplicates (62970     unique pregnancies)
+table(is.na(prs_father$PREG_ID_2306)) # no NAs 
+
+table(duplicated(prs_father$F_ID_2306)) # 53229  unique fathers (9741 fathers have more than one child)
+table(duplicated(prs_father$FID)) # from unique 41441 families (21529  families have more than one father, e.g. two fathers are brothers)
+
+# check number of unique children by family
+table(duplicated(prs_offspring$PREG_ID_2306)) # 700 duplicates (75721 unique pregnancies)
+table(duplicated(prs_offspring$FID)) # from 50381 families, 26040 from the same family
+
+
+# Merge child prs with mother prs, then father prs, dropping IID (redundant if using M_ID_2306 and F_ID_2306)
+
+# processed_prs2 <- merge(prs_offspring[,-1], prs_mother[,-3], by = c("PREG_ID_2306", "FID"), all.x = T, all.y = T) 
+# processed_prs2 <- merge(processed_prs2, prs_father[,-3], by = c("PREG_ID_2306", "FID"), all.x = T, all.y = T) 
+
+processed_prs2 <- merge(prs_offspring, prs_mother, by = c("PREG_ID_2306"), suffixes = c("_Child", "_Mother"), all.x = T, all.y = T) 
+processed_prs2 <- merge(processed_prs2, prs_father, by = c("PREG_ID_2306"), suffixes = "_Father", all.x = T, all.y = T) 
+processed_prs2 <- processed_prs2 %>% rename(FID_Father = FID, IID_Father = IID)
+
+view(select(processed_prs2, PREG_ID_2306, FID_Mother, M_ID_2306, FID_Father, F_ID_2306)) # same fam ID can have different mothers, fathers and children.
+
+
+
+#############################
+#############################
+# Currently contains siblings - remove duplicate mothers and fathers prioritising those with complete data
+
+
+# keep complete trios only before additional exclusions
+prs_comp_trios <- processed_prs2[complete.cases(processed_prs2[ , c("PGS_ADHD_res_Child", "PGS_ADHD_res_Mother", "PGS_ADHD_res_Father")]),]
+
+dim(prs_comp_trios)[1]
+# 42190  trios with pgs for all members (9th May 2023)
+
+
+view(select(prs_comp_trios, PREG_ID_2306, FID_Mother, M_ID_2306, FID_Father, F_ID_2306)) # same fam ID can have different mothers, fathers and children.
+
+
+length(unique(prs_comp_trios$PREG_ID_2306)) # 41818 unique pregnancies
+length(unique(prs_comp_trios$M_ID_2306))    # 36695 unique mothers
+length(unique(prs_comp_trios$F_ID_2306))    # 36689 unique fathers
+
+
+save(prs_comp_trios, file = "N:/durable/people/Leo/DNAm_ADHD/data/prs_comp_trios.RData")
+
+
+
+## Merge PGS with other data (NPR, pheno and MPS)
+
+load("N:/durable/people/Leo/DNAm_ADHD/data/MPS_NPR_all.RData")
+prs_comp_trios <- prs_comp_trios %>%
+  mutate(PREG_ID_2306 = as.numeric(PREG_ID_2306),
+         BARN_NR = as.numeric(BARN_NR)) %>%
+  arrange(PREG_ID_2306)
+
+data <- data %>% arrange(PREG_ID_2306)
+
+# merge
+alldata <- full_join(data, prs_comp_trios)
+
+save(alldata, file = "N:/durable/people/Leo/DNAm_ADHD/data/MPS_PGS_NPR_pheno.RData")
+
+#### stop here for now! #### 
+
+
+
+
+## load your file of phenotype data, e.g. conduct problems age 8
+load("N:/durable/people/Leo/DNAm_ADHD/data/pheno_ADHD.RData")
+load("N:/durable/people/Leo/DNAm_ADHD/data/prs_comp_trios.RData")
+
+
+
+# # list of child preg ids with any CD pheno data available at age 8
+# pheno_ids <- phenoData %>% 
+#   select(PREG_ID_2306, NN111, NN112, NN113, NN114, NN115, NN116, NN117, NN118, cdSum, cdSum_z) %>% 
+#   subset(!is.na(phenoData[3]) | !is.na(phenoData[4]) | !is.na(phenoData[5]) | !is.na(phenoData[6]) |
+#            !is.na(phenoData[7]) | !is.na(phenoData[8]) | !is.na(phenoData[9]) | !is.na(phenoData[10])) # 43,585 children
+# 
+# pheno_ids <- phenoData %>% 
+#   select(PREG_ID_2306, NN111, NN112, NN113, NN114, NN115, NN116, NN117, NN118, cdSum, cdSum_z) %>% 
+#   subset(!is.na(phenoData[3]) & !is.na(phenoData[4]) & !is.na(phenoData[5]) & !is.na(phenoData[6]) &
+#            !is.na(phenoData[7]) & !is.na(phenoData[8]) & !is.na(phenoData[9]) & !is.na(phenoData[10])) # 43,585 children
+
+
+# only sum score
+# pheno_ids <- phenoData %>% select(PREG_ID_2306, cdSum_z) %>% subset(!is.na(phenoData$cdSum_z)) # 43,515 children
+
+
+prs_comp_trios$PREG_ID_2306 <- as.numeric(prs_comp_trios$PREG_ID_2306)
+prs_comp_trios <- prs_comp_trios %>% arrange(PREG_ID_2306)
+
+
+# create dummy variable to indicate if any child pheno data available (1) or not (NA)
+prs_comp_trios$trio_pheno <- NA
+#prs_comp_trios$trio_pheno[prs_comp_trios$PREG_ID_2306 %in% pheno_ids$PREG_ID_2306] <- 1
+
+# check <- prs_comp_trios %>% 
+#   select(c(PREG_ID_2306, trio_pheno))
+
+#table(prs_comp_trios$trio_pheno, useNA = "ifany") # 18874  with pheno, 23344 without
+
+# sort on pregnancy id, with missing pheno for duplicates last, then retain first distinct id
+sort_trio_data <- prs_comp_trios %>% arrange(PREG_ID_2306, trio_pheno) %>% distinct(PREG_ID_2306, .keep_all = T)
+
+# sort on mother id, with missing pheno for duplicates last, then retain first distinct mother id
+sort_trio_data <- sort_trio_data %>% arrange(M_ID_2306, trio_pheno) %>% distinct(M_ID_2306, .keep_all = T)
+
+# sort on father id, with missing pheno for duplicates last, then retain first distinct father ID
+sort_trio_data <- sort_trio_data %>% arrange(F_ID_2306, trio_pheno) %>% distinct(F_ID_2306, .keep_all = T)
+
+length(unique(sort_trio_data$PREG_ID_2306)) # 36681 complete family trios
+length(unique(sort_trio_data$M_ID_2306))    # 36681
+length(unique(sort_trio_data$F_ID_2306))    # 36681
+length(unique(sort_trio_data$IID_Child))    # 36681
+
+length(unique(sort_trio_data$FID_Child))     # 30065 COMPLETELY unrelated family trios (not relevant here)
+length(unique(sort_trio_data$FID_Mother))    # 30065
+length(unique(sort_trio_data$FID_Father))    # 30065
+
+
+# filter by FID (not recommended), but keep it as a comparison with other approaches
+
+sort_trio_data2 <- sort_trio_data %>% arrange(FID_Child, trio_pheno) %>% distinct(FID_Child, .keep_all = T)
+sort_trio_data2 <- sort_trio_data2 %>% arrange(FID_Mother, trio_pheno) %>% distinct(FID_Mother, .keep_all = T)
+sort_trio_data2 <- sort_trio_data2 %>% arrange(FID_Father, trio_pheno) %>% distinct(FID_Father, .keep_all = T)
+
+table(sort_trio_data2$trio_pheno, useNA = "ifany") # 15094 with pheno, 14971 without
+
+#########
+
+```
+
+# Remove related individuals across trios
+
+```{r}
+#########
+library(data.table)
+
+
+MZtwins <- fread("N:/durable/data/genetic/MoBaPsychGen_v1/MoBaPsychGen_v1_MZ_twin_pairs_identified_by_KING.txt")
+KING_across <- fread("N:/durable/data/genetic/MoBaPsychGen_v1/MoBaPsychGen_v1_Within_generation_PO_across_generation_S_identified_by_KING.txt")
+
+
+# keep only one individual of pairs of twins, prioritizing those with pheno data
+
+# sort twin pairs in the data based on phenotype and keep the first of each twin pair (thus prioritizing those with pheno)
+keep_mz <- sort_trio_data %>% 
+  filter(sort_trio_data$FID_Child %in% MZtwins$FID_in_fam_file) %>%
+  arrange(FID_Child, trio_pheno) %>% distinct(FID_Child, .keep_all = T) %>%
+  select(PREG_ID_2306)
+
+# index of twins to be remove
+remove_mz <- sort_trio_data %>% 
+  filter(sort_trio_data$FID_Child %in% MZtwins$FID_in_fam_file) %>%
+  filter(!(.$PREG_ID_2306 %in% keep_mz$PREG_ID_2306)) %>% 
+  select(PREG_ID_2306)
+
+# double check (should all be false)
+keep_mz$PREG_ID_2306 %in% remove_mz$PREG_ID_2306
+
+# remove twins from our data frame
+sort_trio_data <- sort_trio_data[!(sort_trio_data$PREG_ID_2306 %in% remove_mz$PREG_ID_2306), ]
+
+
+# remove other related individuals (here only parent-offspring relations across generations)
+
+head(KING_across)
+
+# same approach as with twins
+keep_KING <- sort_trio_data %>% 
+  filter(FID_Child %in% KING_across$FID_in_fam_file) %>%
+  arrange(FID_Child, trio_pheno) %>% distinct(FID_Child, .keep_all = T) %>%
+  select(PREG_ID_2306)
+
+remove_KING <- sort_trio_data %>% 
+  filter(FID_Child %in% KING_across$FID_in_fam_file) %>%
+  filter(!(.$PREG_ID_2306 %in% keep_KING$PREG_ID_2306)) %>% 
+  select(PREG_ID_2306)
+
+# # should all be FALSE
+# keep_KING$PREG_ID_2306 %in% remove_KING$PREG_ID_2306
+# 
+# 
+# sort_trio_data <- sort_trio_data[!(sort_trio_data$PREG_ID_2306 %in% remove_KING$PREG_ID_2306), ]
+# 
+# 
+# length(unique(sort_trio_data$PREG_ID_2306)) # 36337
+# length(unique(sort_trio_data$M_ID_2306))    # 36337
+# length(unique(sort_trio_data$F_ID_2306))    # 36337
+# length(unique(sort_trio_data$IID_Child))    # 36337
+# 
+# table(sort_trio_data$trio_pheno, useNA = "ifany") # 16786  yes, 19551  no
+# 
+# 
+# rm(KING_across, MZtwins, keep_KING, keep_mz, remove_KING, remove_mz)
+
+
+
+## check whether closely related individuals across and within generations are still present in the data using the KING/plink files
+
+
+
+```
+
+
+
+# Merge genetic and phenotype data
+
+```{r}
+# clear workspace
+#rm(list = ls())
+
+# load packages
+library(psych)
+library(tidyverse)
+
+# read in trio pgs (complete trios only, excluding relatives/sibs)
+#trio_pgs <- read.table("N:/durable/people/Leo/conduct/v1/data/PGS_trios_filtered_byPIHAT.txt", header = T)
+
+# #read phenotype data
+load("N:/durable/people/Leo/DNAm_ADHD/data/pheno_ADHD.RData")
+
+sort_trio_data$BARN_NR <- as.numeric(sort_trio_data$BARN_NR)
+
+# merge pheno, pgs and registry data on ids filtered for trio analysis exclusions:
+
+alldata <- data_all %>%
+  right_join(sort_trio_data)
+
+
+save(alldata, file = "N:/durable/people/Leo/DNAm_ADHD/data/pgs_and_phenos.RData")
+write.table(alldata, file = ("N:/durable/people/Leo/DNAm_ADHD/data/pgs_and_phenos.txt"), quote = FALSE, col.names = T, row.names = F)
+```
+
+
